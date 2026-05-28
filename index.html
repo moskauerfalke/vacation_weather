@@ -156,7 +156,7 @@
     }
 
     .metric-label {
-      font-size: 8px;
+      font-size: 10px;
       font-weight: 700;
       letter-spacing: 0;
     }
@@ -504,7 +504,8 @@
     };
 
     const settings = {
-      forecastDays: 11
+      planningStartDate: "2026-06-01",
+      planningEndDate: "2026-06-12"
     };
 
     const colors = {
@@ -577,6 +578,8 @@
     }
 
     async function loadForecast(city) {
+      const forecastRequestWindow = getForecastRequestWindow();
+      const displayWindow = getForecastDisplayWindow();
       const params = new URLSearchParams({
         latitude: city.lat,
         longitude: city.lon,
@@ -586,7 +589,8 @@
           "precipitation_probability_max",
           "sunshine_duration"
         ].join(","),
-        forecast_days: settings.forecastDays,
+        start_date: forecastRequestWindow.startDate,
+        end_date: forecastRequestWindow.endDate,
         timezone: "auto"
       });
 
@@ -606,7 +610,7 @@
           rain: toNumber(daily.precipitation_sum[index]),
           prob: toNumber(daily.precipitation_probability_max[index]),
           sun: toNumber(daily.sunshine_duration[index]) / 3600
-        }))
+        })).filter((day) => day.date >= displayWindow.startDate && day.date <= displayWindow.endDate)
       };
     }
 
@@ -628,7 +632,7 @@
       return `
         <article class="analytics-card">
           <h2 class="analytics-title">Лучшие совместимые окна</h2>
-          <p class="analytics-note">Сегодня исключён: это дорожный день. Швейцария и море считаются как две отдельные поездки; между ними обязателен минимум 1 день перерыва.</p>
+          <p class="analytics-note">Первый день прогноза исключён: это дорожный день. 12 июня тоже не используется для поездок. Между Швейцарией и морем обязателен минимум 1 день перерыва.</p>
           <div class="trip-list">
             ${renderTripCard(analytics.bestPair?.swiss, "Швейцария")}
             ${renderTripCard(analytics.bestPair?.sea, analytics.bestPair?.sea ? `Море: ${analytics.bestPair.sea.city}` : "Море")}
@@ -667,10 +671,11 @@
     function buildAnalytics(forecasts) {
       const byName = Object.fromEntries(forecasts.map((city) => [city.name, city]));
       const analyticsStartDate = getAnalyticsStartDate();
-      const swiss = buildSwissTrips(byName["Интерлакен"], byName["Фисп"], analyticsStartDate);
+      const analyticsEndExclusive = settings.planningEndDate;
+      const swiss = buildSwissTrips(byName["Интерлакен"], byName["Фисп"], analyticsStartDate, analyticsEndExclusive);
       const allSea = forecasts
         .filter((city) => city.country === "Италия")
-        .flatMap((city) => buildSeaTrips(city, analyticsStartDate))
+        .flatMap((city) => buildSeaTrips(city, analyticsStartDate, analyticsEndExclusive))
         .sort(compareTrips);
       const bestPair = findBestCompatiblePair(swiss, allSea);
 
@@ -681,13 +686,13 @@
       };
     }
 
-    function buildSwissTrips(interlaken, visp, analyticsStartDate) {
+    function buildSwissTrips(interlaken, visp, analyticsStartDate, analyticsEndExclusive) {
       if (!interlaken || !visp) {
         return [];
       }
 
-      const interlakenDays = filterAnalyticsDays(interlaken.days, analyticsStartDate);
-      const vispDays = filterAnalyticsDays(visp.days, analyticsStartDate);
+      const interlakenDays = filterAnalyticsDays(interlaken.days, analyticsStartDate, analyticsEndExclusive);
+      const vispDays = filterAnalyticsDays(visp.days, analyticsStartDate, analyticsEndExclusive);
       const limit = Math.min(interlakenDays.length, vispDays.length) - 1;
       return Array.from({ length: Math.max(0, limit) }, (_, index) => {
         const routeDays = [
@@ -721,9 +726,9 @@
       }).sort(compareTrips);
     }
 
-    function buildSeaTrips(city, analyticsStartDate) {
+    function buildSeaTrips(city, analyticsStartDate, analyticsEndExclusive) {
       const length = 4;
-      const days = filterAnalyticsDays(city.days, analyticsStartDate);
+      const days = filterAnalyticsDays(city.days, analyticsStartDate, analyticsEndExclusive);
       const limit = days.length - length + 1;
       return Array.from({ length: Math.max(0, limit) }, (_, index) => {
         const tripDays = days.slice(index, index + length);
@@ -873,14 +878,25 @@
       return !tripsOverlap(a, b) && tripGapDays(a, b) >= 1;
     }
 
-    function filterAnalyticsDays(days, analyticsStartDate) {
-      return days.filter((day) => day.date >= analyticsStartDate);
+    function filterAnalyticsDays(days, analyticsStartDate, analyticsEndExclusive) {
+      return days.filter((day) => day.date >= analyticsStartDate && day.date < analyticsEndExclusive);
     }
 
     function getAnalyticsStartDate() {
-      const tomorrow = new Date();
-      tomorrow.setDate(tomorrow.getDate() + 1);
-      return toIsoDate(tomorrow);
+      return addDaysIso(getForecastDisplayWindow().startDate, 1);
+    }
+
+    function getForecastRequestWindow() {
+      const today = toIsoDate(new Date());
+      const startDate = today < settings.planningStartDate ? today : settings.planningStartDate;
+      return { startDate, endDate: settings.planningEndDate };
+    }
+
+    function getForecastDisplayWindow() {
+      const today = toIsoDate(new Date());
+      const startDate = today > settings.planningStartDate ? today : settings.planningStartDate;
+      const endDate = startDate > settings.planningEndDate ? startDate : settings.planningEndDate;
+      return { startDate, endDate };
     }
 
     function combinedTripScore(swiss, sea) {
@@ -911,6 +927,12 @@
       const month = String(date.getMonth() + 1).padStart(2, "0");
       const day = String(date.getDate()).padStart(2, "0");
       return `${year}-${month}-${day}`;
+    }
+
+    function addDaysIso(date, days) {
+      const next = new Date(`${date}T12:00:00`);
+      next.setDate(next.getDate() + days);
+      return toIsoDate(next);
     }
 
     function trafficLabel(color) {
@@ -965,7 +987,7 @@
       const innerW = width - margin.left - margin.right;
       const innerH = height - margin.top - margin.bottom;
       const days = city.days;
-      const xStep = innerW / (days.length - 1);
+      const xStep = days.length > 1 ? innerW / (days.length - 1) : 0;
       const barW = Math.max(profile.barMin, Math.min(profile.barMax, xStep * profile.barFactor));
 
       const tempExtent = padExtent(days.map((d) => d.temp), 2);
